@@ -4677,13 +4677,1525 @@ Spring Batch 为Processor 提供**默认的处理器**与**自定义处理器**2
 
 ### 默认ItemProcessor
 
+Spring Batch 提供现成的ItemProcessor 组件有4种：
+
+####  ValidatingItemProcessor：校验处理器
+
+很多时候ItemReader读出来的数据是相对原始的数据，并没有做过多的校验
+
+数据文件user-validate.txt
+
+```tex
+1##18
+2##16
+3#xiaoxue#20
+4#xiaoming#19
+5#xiaogang#15
+```
+
+比如上面文本数据，第一条，第二条name数值没有指定，在ItemReader 读取之后，必定将 "" 空串封装到User name属性中，语法上没有错，但逻辑上可以做文章，比如：用户名不为空。
+
+解决上述问题，可以使用Spring Batch 提供ValidatingItemProcessor 校验器处理。
 
 
 
+> 1.导入校验依赖
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-validation</artifactId>
+</dependency>
+```
+
+
+
+> 2.定义实体对象
+
+```java
+@Getter
+@Setter
+@ToString
+public class User {
+    private Long id;
+    @NotBlank(message = "用户名不能为null或空串")
+    private String name;
+    private int age;
+}
+```
+
+
+
+> 3.实现
+
+```java
+/**
+ * @Author ldd
+ * @Date 2024/2/5
+ */
+
+@SpringBootApplication
+@EnableBatchProcessing
+public class ValidationProcessorJob {
+    @Autowired
+    private JobBuilderFactory jobBuilderFactory;
+    @Autowired
+    private StepBuilderFactory stepBuilderFactory;
+
+
+    @Bean
+    public FlatFileItemReader<User> userItemReader(){
+        return new FlatFileItemReaderBuilder<User>()
+                .name("userItemReader")
+                .resource(new ClassPathResource("user-validate.txt"))
+                .delimited().delimiter("#")
+                .names("id", "name", "age")
+                .targetType(User.class)
+                .build();
+    }
+
+    @Bean
+    public ItemWriter<User> itemWriter(){
+        return new ItemWriter<User>() {
+            @Override
+            public void write(List<? extends User> items) throws Exception {
+                items.forEach(System.err::println);
+            }
+        };
+    }
+
+
+    @Bean
+    public BeanValidatingItemProcessor<User> beanValidatingItemProcessor(){
+        BeanValidatingItemProcessor<User> beanValidatingItemProcessor = new BeanValidatingItemProcessor<>();
+        beanValidatingItemProcessor.setFilter(true);  //不满足条件丢弃数据
+
+        return beanValidatingItemProcessor;
+    }
+
+
+    @Bean
+    public Step step(){
+        return stepBuilderFactory.get("step1")
+                .<User, User>chunk(1)
+                .reader(userItemReader())
+                .processor(beanValidatingItemProcessor())
+                .writer(itemWriter())
+                .build();
+
+    }
+
+    @Bean
+    public Job job(){
+        return jobBuilderFactory.get("validate-processor-job4")
+                .start(step())
+                .build();
+    }
+    public static void main(String[] args) {
+        SpringApplication.run(ValidationProcessorJob.class, args);
+    }
+}
+```
+
+核心BeanValidatingItemProcessor 类是Spring Batch 提供现成的Validator校验类，这里直接使用即可,BeanValidatingItemProcessor 是 ValidatingItemProcessor 子类。
+
+![image-20240205095745607](https://s2.loli.net/2024/02/05/61POecu7UlbxyRW.png)
+
+
+
+####  ItemProcessorAdapter：适配器处理器
+
+很多的校验逻辑已经有现成的，做ItemProcessor处理时候，如何使用现成逻辑？
+
+**需求：现有处理逻辑：将User对象中name转换成大写**
+
+```java
+public class UserServiceImpl{
+    public User toUpperCaseTest(User user){
+        user.setName(user.getName().toUpperCase());
+        return user;
+    }
+}
+```
+
+user-adapter.txt
+
+```tex
+1#xiaodong#18
+2#xiaojia#16
+3#xiaoxue#20
+4#xiaoming#19
+5#xiaogang#15
+```
+
+逻辑代码
+
+```java
+@SpringBootApplication
+@EnableBatchProcessing
+public class AdapterProcessorJob {
+    @Autowired
+    private JobBuilderFactory jobBuilderFactory;
+    @Autowired
+    private StepBuilderFactory stepBuilderFactory;
+
+
+    @Bean
+    public FlatFileItemReader<User> userItemReader(){
+        return new FlatFileItemReaderBuilder<User>()
+                .name("userItemReader")
+                .resource(new ClassPathResource("user-adapter.txt"))
+                .delimited().delimiter("#")
+                .names("id", "name", "age")
+                .targetType(User.class)
+                .build();
+    }
+
+    @Bean
+    public ItemWriter<User> itemWriter(){
+        return new ItemWriter<User>() {
+            @Override
+            public void write(List<? extends User> items) throws Exception {
+                items.forEach(System.err::println);
+            }
+        };
+    }
+
+    @Bean
+    public UserServiceImpl userService(){
+        return new UserServiceImpl();
+    }
+    @Bean
+    public ItemProcessorAdapter<User, User> itemProcessorAdapter(){
+        ItemProcessorAdapter<User, User> adapter = new ItemProcessorAdapter<>();
+        adapter.setTargetObject(userService());
+        adapter.setTargetMethod("toUpperCaseTest");
+
+        return adapter;
+    }
+
+    @Bean
+    public Step step(){
+        return stepBuilderFactory.get("step1")
+                .<User, User>chunk(1)
+                .reader(userItemReader())
+                .processor(itemProcessorAdapter())
+                .writer(itemWriter())
+                .build();
+
+    }
+    @Bean
+    public Job job(){
+        return jobBuilderFactory.get("adapter-processor-job")
+                .start(step())
+                .build();
+    }
+    public static void main(String[] args) {
+        SpringApplication.run(AdapterProcessorJob.class, args);
+    }
+}
+```
+
+itemProcessorAdapter()实例方法，引入ItemProcessorAdapter 适配器类，绑定自定义的UserServiceImpl 类与toUppeCase方法，当ItemReader 读完之后，马上调用UserServiceImpl  类的toUppeCase 方法处理逻辑。方法传参数会被忽略，ItemProcessor会自动处理。
+
+![image-20240205100907863](https://s2.loli.net/2024/02/05/Naf1WIHTJKh74FY.png)
+
+
+
+
+
+####  ScriptItemProcessor：脚本处理器
+
+就拿前面User的name转换为大写来举例子，SpringBatch也提供了js脚本的形式，将上面的逻辑写到js文件中，加载这个脚本文件一样能实现。**好处就是：省去定义类，定义方法的麻烦。**
+
+**需求：使用js脚本方式实现用户名大写处理**
+
+userScript.js
+
+```javascript
+item.setName(item.getName().toUpperCase());
+item;
+```
+
+item是约定的单词，表示ItemReader读除来每个条目
+
+userScript.js文件放置到resource资源文件中
+
+```java
+@SpringBootApplication
+@EnableBatchProcessing
+public class ScriptProcessorJob {
+    @Autowired
+    private JobBuilderFactory jobBuilderFactory;
+    @Autowired
+    private StepBuilderFactory stepBuilderFactory;
+
+
+    @Bean
+    public FlatFileItemReader<User> userItemReader(){
+        return new FlatFileItemReaderBuilder<User>()
+                .name("userItemReader")
+                .resource(new ClassPathResource("user-adapter.txt"))
+                .delimited().delimiter("#")
+                .names("id", "name", "age")
+                .targetType(User.class)
+                .build();
+    }
+
+    @Bean
+    public ItemWriter<User> itemWriter(){
+        return new ItemWriter<User>() {
+            @Override
+            public void write(List<? extends User> items) throws Exception {
+                items.forEach(System.err::println);
+            }
+        };
+    }
+
+
+    @Bean
+    public ScriptItemProcessor<User, User> scriptItemProcessor(){
+        ScriptItemProcessor scriptItemProcessor = new ScriptItemProcessor();
+        scriptItemProcessor.setScript(new ClassPathResource("js/userScript.js"));
+        return scriptItemProcessor;
+    }
+
+    @Bean
+    public Step step(){
+        return stepBuilderFactory.get("step1")
+                .<User, User>chunk(1)
+                .reader(userItemReader())
+                .processor(scriptItemProcessor())
+                .writer(itemWriter())
+                .build();
+
+    }
+
+    @Bean
+    public Job job(){
+        return jobBuilderFactory.get("script-processor-job2")
+                .start(step())
+                .build();
+    }
+    public static void main(String[] args) {
+        SpringApplication.run(ScriptProcessorJob.class, args);
+    }
+}
+```
+
+核心还是scriptItemProcessor() 实例方法，ScriptItemProcessor 类用于加载js 脚本并处理js脚本。
+
+CompositeItemProcessor是一个ItemProcessor处理组合，类似于过滤器链，数据先经过第一个处理器，然后再经过第二个处理器，直到最后。前一个处理器处理的结果，是后一个处理器的输出。
+
+
+
+![image-20240205110916134](https://s2.loli.net/2024/02/05/95Y48RaSK6owGlc.png)
+
+
+
+
+
+#### CompositeItemProcessor：组合处理器
+
+**需求：将解析出来用户name进行判空处理，并将name属性转换成大写**
+
+
+
+user-validate.txt
+
+```tex
+1##18
+2##16
+3#xiaoxue#20
+4#xiaoming#19
+5#xiaogang#15
+```
+
+
+
+User:
+
+```java
+@Getter
+@Setter
+@ToString
+public class User {
+    private Long id;
+    @NotBlank(message = "用户名不能为null或空串")
+    private String name;
+    private int age;
+}
+```
+
+
+
+大小写转换实现类：
+
+```java
+public class UserServiceImpl {
+    public com.ldd.itemprocessor_adapter.User toUpperCaseTest(User user){
+        user.setName(user.getName().toUpperCase());
+        return user;
+    }
+}
+```
+
+
+
+完整逻辑：
+
+```java
+@SpringBootApplication
+@EnableBatchProcessing
+public class CompositeProcessorJob {
+    @Autowired
+    private JobBuilderFactory jobBuilderFactory;
+    @Autowired
+    private StepBuilderFactory stepBuilderFactory;
+
+
+    @Bean
+    public FlatFileItemReader<User> userItemReader(){
+        return new FlatFileItemReaderBuilder<User>()
+                .name("userItemReader")
+                .resource(new ClassPathResource("user-validate.txt"))
+                .delimited().delimiter("#")
+                .names("id", "name", "age")
+                .targetType(User.class)
+                .build();
+    }
+
+    @Bean
+    public ItemWriter<User> itemWriter(){
+        return new ItemWriter<User>() {
+            @Override
+            public void write(List<? extends User> items) throws Exception {
+                items.forEach(System.err::println);
+            }
+        };
+    }
+
+    @Bean
+    public UserServiceImpl userService(){
+        return new UserServiceImpl();
+    }
+    @Bean
+    public BeanValidatingItemProcessor<User> beanValidatingItemProcessor(){
+        BeanValidatingItemProcessor<User> beanValidatingItemProcessor = new BeanValidatingItemProcessor<>();
+        beanValidatingItemProcessor.setFilter(true);  //不满足条件丢弃数据
+        return beanValidatingItemProcessor;
+    }
+
+    @Bean
+    public ItemProcessorAdapter<User, User> itemProcessorAdapter(){
+        ItemProcessorAdapter<User, User> adapter = new ItemProcessorAdapter<>();
+        adapter.setTargetObject(userService());
+        adapter.setTargetMethod("toUpperCaseTest");
+
+        return adapter;
+    }
+
+    @Bean
+    public CompositeItemProcessor<User, User> compositeItemProcessor(){
+        CompositeItemProcessor<User, User> compositeItemProcessor = new CompositeItemProcessor<>();
+        compositeItemProcessor.setDelegates(Arrays.asList(
+                beanValidatingItemProcessor(), itemProcessorAdapter()
+        ));
+        return  compositeItemProcessor;
+    }
+
+    @Bean
+    public Step step(){
+        return stepBuilderFactory.get("step1")
+                .<User, User>chunk(1)
+                .reader(userItemReader())
+                .processor(compositeItemProcessor())
+                .writer(itemWriter())
+                .build();
+
+    }
+
+    @Bean
+    public Job job(){
+        return jobBuilderFactory.get("composite-processor-job")
+                .start(step())
+                .build();
+    }
+    public static void main(String[] args) {
+        SpringApplication.run(CompositeProcessorJob.class, args);
+    }
+}
+```
+
+核心：compositeItemProcessor() 实例方法，使用setDelegates 操作将其他ItemProcessor 处理合并成一个。
+
+![image-20240205112950189](./image/dJKchak7tpxzjq1.png)
+
+
+
+
+
+### 自定义ItemProcessor处理器
+
+Spring Batch 允许自定义，具体做法只需要实现ItemProcessor接口即可
+
+**需求：自定义处理器，筛选出id为偶数的用户**
+
+user.txt
+
+```tex
+1#xiaodong#18
+2#xiaojia#16
+3#xiaoxue#20
+4#xiaoming#19
+5#xiaogang#15
+```
+
+
+
+User：
+
+```java
+@Getter
+@Setter
+@ToString
+public class User {
+    private Long id;
+    private String name;
+    private int age;
+}
+```
+
+
+
+自定义处理器：
+
+```java
+public class CustomizeItemProcessor implements ItemProcessor<User, User> {
+    @Override
+    public User process(User item) throws Exception {
+        //id为偶数的直接抛弃
+        //返回null时候，读入的item会被抛弃，不会进入itemWriter
+        return item.getId() % 2 != 0 ? item : null;
+    }
+}
+```
+
+作业逻辑：
+
+```java
+@SpringBootApplication
+@EnableBatchProcessing
+public class CustomizeProcessorJob {
+    @Autowired
+    private JobBuilderFactory jobBuilderFactory;
+    @Autowired
+    private StepBuilderFactory stepBuilderFactory;
+
+
+    @Bean
+    public FlatFileItemReader<User> userItemReader(){
+        return new FlatFileItemReaderBuilder<User>()
+                .name("userItemReader")
+                .resource(new ClassPathResource("user.txt"))
+                .delimited().delimiter("#")
+                .names("id", "name", "age")
+                .targetType(User.class)
+                .build();
+    }
+
+    @Bean
+    public ItemWriter<User> itemWriter(){
+        return new ItemWriter<User>() {
+            @Override
+            public void write(List<? extends User> items) throws Exception {
+                items.forEach(System.err::println);
+            }
+        };
+    }
+    @Bean
+    public CustomizeItemProcessor customizeItemProcessor(){
+        return new CustomizeItemProcessor();
+    }
+
+    @Bean
+    public Step step(){
+        return stepBuilderFactory.get("step1")
+                .<User, User>chunk(1)
+                .reader(userItemReader())
+                .processor(customizeItemProcessor())
+                .writer(itemWriter())
+                .build();
+
+    }
+    @Bean
+    public Job job(){
+        return jobBuilderFactory.get("customize-processor-job")
+                .start(step())
+                .build();
+    }
+    public static void main(String[] args) {
+        SpringApplication.run(CustomizeProcessorJob.class, args);
+    }
+}
+```
+
+![image-20240205113722628](https://s2.loli.net/2024/02/05/mdCPAROxviuon91.png)
 
 ## ItemWriter
 
+ItemWriter， Spring Batch提供的数据输出组件与数据输入组件是成对，也就是说有啥样子的输入组件，就有啥样子的输出组件。
 
+
+
+### 输出平面文件
+
+当将读入的数据输出到纯文本文件时，可以通过FlatFileItemWriter 输出器实现。
+
+**需求：将user.txt中数据读取出来，输出到outUser.txt文件中**
+
+user.txt:
+
+```tex
+1#xiaodong#18
+2#xiaojia#16
+3#xiaoxue#20
+4#xiaoming#19
+5#xiaogang#15
+```
+
+
+
+User:
+
+```java
+@Getter
+@Setter
+@ToString
+public class User {
+    private Long id;
+    private String name;
+    private int age;
+}
+```
+
+
+
+实现逻辑：
+
+```java
+@SpringBootApplication
+@EnableBatchProcessing
+public class FlatWriteJob {
+    @Autowired
+    private JobBuilderFactory jobBuilderFactory;
+    @Autowired
+    private StepBuilderFactory stepBuilderFactory;
+
+    @Bean
+    public FlatFileItemReader<User> userItemReader(){
+        return new FlatFileItemReaderBuilder<User>()
+                .name("userItemReader")
+                .resource(new ClassPathResource("user.txt"))
+                .delimited().delimiter("#")
+                .names("id", "name", "age")
+                .targetType(User.class)
+                .build();
+    }
+
+    @Bean
+    public FlatFileItemWriter<User> itemWriter(){
+        return new FlatFileItemWriterBuilder<User>()
+                .name("userItemWriter")
+                .resource(new PathResource("D:\\DevelopSpace\\IdeaSpace\\spring-batch-example\\src\\main\\resources\\outUser.txt"))  //输出的文件
+                .formatted()  //数据格式指定
+                .format("id: %s,姓名：%s,年龄：%s")  //输出数据格式
+                .names("id", "name", "age")  //需要输出属性
+                .build();
+    }
+
+    @Bean
+    public Step step(){
+        return stepBuilderFactory.get("step1")
+                .<User, User>chunk(1)
+                .reader(userItemReader())
+                .writer(itemWriter())
+                .build();
+
+    }
+
+    @Bean
+    public Job job(){
+        return jobBuilderFactory.get("flat-writer-job")
+                .start(step())
+                .build();
+    }
+    public static void main(String[] args) {
+        SpringApplication.run(FlatWriteJob.class, args);
+    }
+}
+```
+
+核心代码具体：
+
+```java
+@Bean
+public FlatFileItemWriter<User> itemWriter(){
+    return new FlatFileItemWriterBuilder<User>()
+        .name("userItemWriter")
+        .resource(new PathResource("c:/outUser.txt"))  //输出的文件
+        .formatted()  //数据格式指定
+        .format("id: %s,姓名：%s,年龄：%s")  //输出数据格式
+        .names("id", "name", "age")  //需要输出属性
+        .shouldDeleteIfEmpty(true)   //如果读入数据为空，输出时创建文件直接删除
+        .shouldDeleteIfExists(true) //如果输出文件已经存在，则删除
+        .append(true)  //如果输出文件已经存在， 不删除，直接追加到现有文件中
+        .build();
+}
+```
+
+![image-20240205114449593](https://s2.loli.net/2024/02/05/6OhkSMlbUYILwzZ.png)
+
+### 输出Json文件
+
+当将读入的数据输出到Json文件时，可以通过JsonFileItemWriter输出器实现。
+
+**需求：将user.txt中数据读取出来，输出到outUser.json文件中**
+
+user.txt和User不变
+
+```java
+@SpringBootApplication
+@EnableBatchProcessing
+public class JsonWriteJob {
+    @Autowired
+    private JobBuilderFactory jobBuilderFactory;
+    @Autowired
+    private StepBuilderFactory stepBuilderFactory;
+
+    @Bean
+    public FlatFileItemReader<User> userItemReader(){
+        return new FlatFileItemReaderBuilder<User>()
+                .name("userItemReader")
+                .resource(new ClassPathResource("user.txt"))
+                .delimited().delimiter("#")
+                .names("id", "name", "age")
+                .targetType(User.class)
+                .build();
+    }
+
+
+    @Bean
+    public JacksonJsonObjectMarshaller<User> objectMarshaller(){
+        JacksonJsonObjectMarshaller marshaller = new JacksonJsonObjectMarshaller();
+        return marshaller;
+    }
+
+    @Bean
+    public JsonFileItemWriter<User> itemWriter(){
+        return new JsonFileItemWriterBuilder<User>()
+                .name("jsonUserItemWriter")
+                .resource(new PathResource("D:\\DevelopSpace\\IdeaSpace\\spring-batch-example\\src\\main\\resources\\outUser.json"))
+                .jsonObjectMarshaller(objectMarshaller())
+                .build();
+    }
+
+
+    @Bean
+    public Step step(){
+        return stepBuilderFactory.get("step1")
+                .<User, User>chunk(1)
+                .reader(userItemReader())
+                .writer(itemWriter())
+                .build();
+
+    }
+
+    @Bean
+    public Job job(){
+        return jobBuilderFactory.get("json-writer-job")
+                .start(step())
+                .build();
+    }
+    public static void main(String[] args) {
+        SpringApplication.run(JsonWriteJob.class, args);
+    }
+}
+```
+
+itemWriter() 实例方法构建JsonFileItemWriter 实例，需要明确指定Json格式装配器
+
+Spring Batch默认提供装配器有2个：JacksonJsonObjectMarshaller   GsonJsonObjectMarshaller 分别对应Jackson 跟 Gson 2种json格式解析逻辑，本次用的是Jackson
+
+![image-20240205115011927](https://s2.loli.net/2024/02/05/ui3MYgC87FGhktZ.png)
+
+### 输出数据库
+
+当将读入的数据需要输出到数据库时，可以通过JdbcBatchItemWriter输出器实现。
+
+**需求：将user.txt中数据读取出来，输出到数据库user表中**
+
+因为之前的案例中把User表的数量增加到了id=30个数据，所以user.txt进行一些修改
+
+user-db.txt
+
+```tex
+31#xiaotian#18
+32#xiaocheng#16
+33#xiaoli#20
+34#xiaobai#19
+35#xiaona#15
+```
+
+沿用上面的user对象将数据输出到user表中
+
+
+
+完整代码：
+
+```java
+@SpringBootApplication
+@EnableBatchProcessing
+public class JdbcWriteJob {
+    @Autowired
+    private JobBuilderFactory jobBuilderFactory;
+    @Autowired
+    private StepBuilderFactory stepBuilderFactory;
+
+    @Autowired
+    private DataSource dataSource;
+
+    @Bean
+    public FlatFileItemReader<User> userItemReader(){
+        return new FlatFileItemReaderBuilder<User>()
+                .name("userItemReader")
+                .resource(new ClassPathResource("user-db.txt"))
+                .delimited().delimiter("#")
+                .names("id", "name", "age")
+                .targetType(User.class)
+                .build();
+    }
+    @Bean
+    public UserPreStatementSetter preStatementSetter(){
+        return new UserPreStatementSetter();
+    }
+    @Bean
+    public JdbcBatchItemWriter<User> itemWriter(){
+        return new JdbcBatchItemWriterBuilder<User>()
+                .dataSource(dataSource)
+                .sql("insert into user(id, name, age) values(?,?,?)")
+                .itemPreparedStatementSetter(preStatementSetter())
+                .build();
+    }
+    @Bean
+    public Step step(){
+        return stepBuilderFactory.get("step1")
+                .<User, User>chunk(1)
+                .reader(userItemReader())
+                .writer(itemWriter())
+                .build();
+    }
+
+    @Bean
+    public Job job(){
+        return jobBuilderFactory.get("jdbc-writer-job")
+                .start(step())
+                .build();
+    }
+    public static void main(String[] args) {
+        SpringApplication.run(JdbcWriteJob.class, args);
+    }
+}
+```
+
+itemWriter() 实例方法中， 需要1>准备构建JdbcBatchItemWriter实例  2>提前准备数据， 3>准备sql语句  4>准备参数绑定器
+
+![image-20240205115756976](https://s2.loli.net/2024/02/05/Ak3LajzcgE5Twh4.png)
+
+
+
+
+
+### 输出多终端
+
+上面几种输出方法都是一对一，可能存在一对多，多个终端输出，此时使用Spring Batch 提供的CompositeItemWriter 组合输出器。
+
+**需求：将user-mult.txt中数据读取出来，输出到outUser.txt/outUser.json/数据库user表中**
+
+user-multi.txt
+
+```tex
+36#xiaotian2#18
+37#xiaocheng2#16
+38#xiaoli2#20
+39#xiaobai2#19
+40#xiaona2#15
+```
+
+```java
+@SpringBootApplication
+@EnableBatchProcessing
+public class CompositeWriteJob {
+    @Autowired
+    private JobBuilderFactory jobBuilderFactory;
+    @Autowired
+    private StepBuilderFactory stepBuilderFactory;
+
+    @Autowired
+    public DataSource dataSource;
+
+    @Bean
+    public FlatFileItemReader<User> userItemReader(){
+        return new FlatFileItemReaderBuilder<User>()
+                .name("userItemReader")
+                .resource(new ClassPathResource("user-multi.txt"))
+                .delimited().delimiter("#")
+                .names("id", "name", "age")
+                .targetType(User.class)
+                .build();
+    }
+
+    @Bean
+    public FlatFileItemWriter<User> flatFileItemWriter(){
+        return new FlatFileItemWriterBuilder<User>()
+                .name("userItemWriter")
+                .resource(new PathResource("D:\\DevelopSpace\\IdeaSpace\\spring-batch-example\\src\\main\\resources\\outUser.txt"))
+                .formatted()  //数据格式指定
+                .format("id: %s,姓名：%s,年龄：%s")  //输出数据格式
+                .names("id", "name", "age")  //需要输出属性
+                .build();
+    }
+
+    @Bean
+    public JacksonJsonObjectMarshaller<User> objectMarshaller(){
+        JacksonJsonObjectMarshaller marshaller = new JacksonJsonObjectMarshaller();
+        return marshaller;
+    }
+
+    @Bean
+    public JsonFileItemWriter<User> jsonFileItemWriter(){
+        return new JsonFileItemWriterBuilder<User>()
+                .name("jsonUserItemWriter")
+                .resource(new PathResource("D:\\DevelopSpace\\IdeaSpace\\spring-batch-example\\src\\main\\resources\\outUser.json"))
+                .jsonObjectMarshaller(objectMarshaller())
+                .build();
+    }
+
+    @Bean
+    public UserPreStatementSetter preStatementSetter(){
+        return new UserPreStatementSetter();
+    }
+
+
+    @Bean
+    public JdbcBatchItemWriter<User> jdbcBatchItemWriter(){
+        return new JdbcBatchItemWriterBuilder<User>()
+                .dataSource(dataSource)
+                .sql("insert into user(id, name, age) values(?,?,?)")
+                .itemPreparedStatementSetter(preStatementSetter())
+                .build();
+    }
+
+    @Bean
+    public CompositeItemWriter<User> compositeItemWriter(){
+        return new CompositeItemWriterBuilder<User>()
+                .delegates(Arrays.asList(flatFileItemWriter(), jsonFileItemWriter(), jdbcBatchItemWriter()))
+                .build();
+    }
+
+
+    @Bean
+    public Step step(){
+        return stepBuilderFactory.get("step1")
+                .<User, User>chunk(1)
+                .reader(userItemReader())
+                .writer(compositeItemWriter())
+                .build();
+
+    }
+
+    @Bean
+    public Job job(){
+        return jobBuilderFactory.get("composite-writer-job")
+                .start(step())
+                .build();
+    }
+    public static void main(String[] args) {
+        SpringApplication.run(CompositeWriteJob.class, args);
+    }
+}
+```
+
+将前面的几种方式通过CompositeItemWriter 类整合在一起
+
+```java
+@Bean
+public CompositeItemWriter<User> compositeItemWriter(){
+    return new CompositeItemWriterBuilder<User>()
+        .delegates(Arrays.asList(flatFileItemWriter(), jsonFileItemWriter(), jdbcBatchItemWriter()))
+        .build();
+}
+```
+
+
+
+
+
+
+
+## SpringBatch拓展
+
+Spring Batch 基本上能满足日常批处理了，下面则是Spring Batch 拓展
+
+### 多线程步骤
+
+默认的情况下，步骤基本上在单线程中执行，**在多线程环境执行，步骤是要设置不可重启**
+
+Spring Batch 的多线程步骤是使用Spring 的 **TaskExecutor**(任务执行器)实现的。约定每一个块开启一个线程独立执行。
+
+![image-20240205131314269](https://s2.loli.net/2024/02/05/L5e89BrWUNQvDnS.png)
+
+
+
+**需求：分5个块处理user-thread.txt文件**
+
+user-thread.txt：
+
+```tex
+1#xiaodong#18
+2#xiaojia#16
+3#xiaoxue#20
+4#xiaoming#19
+5#xiaogang#15
+6#zhangsan#14
+7#lisi#13
+8#wangwu#12
+9#zhaoliu#11
+10#tianqi#10
+```
+
+
+
+User:
+
+```java
+@Getter
+@Setter
+@ToString
+public class User {
+    private Long id;
+    private String name;
+    private int age;
+}
+```
+
+
+
+```java
+@SpringBootApplication
+@EnableBatchProcessing
+public class ThreadStepJob {
+    @Autowired
+    private JobBuilderFactory jobBuilderFactory;
+    @Autowired
+    private StepBuilderFactory stepBuilderFactory;
+
+    @Bean
+    public FlatFileItemReader<User> userItemReader(){
+
+        System.out.println(Thread.currentThread());
+
+        FlatFileItemReader<User> reader = new FlatFileItemReaderBuilder<User>()
+                .name("userItemReader")
+                .saveState(false) //防止状态被覆盖
+                .resource(new ClassPathResource("user-thread.txt"))
+                .delimited().delimiter("#")
+                .names("id", "name", "age")
+                .targetType(User.class)
+                .build();
+
+        return reader;
+    }
+
+    @Bean
+    public ItemWriter<User> itemWriter(){
+        return new ItemWriter<User>() {
+            @Override
+            public void write(List<? extends User> items) throws Exception {
+                items.forEach(System.err::println);
+            }
+        };
+    }
+
+    @Bean
+    public Step step(){
+        return stepBuilderFactory.get("step1")
+                .<User, User>chunk(2)
+                .reader(userItemReader())
+                .writer(itemWriter())
+                .taskExecutor(new SimpleAsyncTaskExecutor())
+                .build();
+
+    }
+
+    @Bean
+    public Job job(){
+        return jobBuilderFactory.get("thread-step-job")
+                .start(step())
+                .build();
+    }
+    public static void main(String[] args) {
+        SpringApplication.run(ThreadStepJob.class, args);
+    }
+}
+```
+
+结果：
+
+![image-20240205143121380](https://s2.loli.net/2024/02/05/cNsg7hb21jFo4GS.png)
+
+**userItemReader()** 加上**saveState(false)** Spring Batch 提供大部分的ItemReader是有状态的，作业重启基本通过状态来确定作业停止位置，而在多线程环境中，如果对象维护状态被多个线程访问，可能存在线程间状态相互覆盖问题。所以设置为false表示关闭状态，但这也意味着作业不能重启了。
+
+**step()** 方法加上**.taskExecutor(new SimpleAsyncTaskExecutor())** 为作业步骤添加了多线程处理能力，以块为单位，一个块一个线程，观察上面的结果，很明显能看出**输出的顺序是乱序的**。改变 job 的名字再执行，会发现输出数据每次都不一样。
+
+
+
+
+
+### 并行步骤
+
+并行步骤，指的是某2个或者多个步骤同时执行。
+
+![image-20240205143318027](https://s2.loli.net/2024/02/05/8CzSj6LFl1rxUiM.png)
+
+图中，流程从步骤1执行，然后执行步骤2， 步骤3，当步骤2/3执行结束之后，在执行步骤4.
+
+**当读取2个或者多个互不关联的文件时，可以多个文件同时读取，这个就是并行步骤。**
+
+**需求：现有user-parallel.txt, user-parallel.json  2个文件将它们中数据读入内存**
+
+user-parallel.txt, user-parallel.json 
+
+```tex
+6#xiaotian#18
+7#xiaocheng#16
+8#xiaoli#20
+9#xiaobai#19
+10#xiaona#15
+```
+
+```json
+[
+  {"id":1, "name":"xiaodong", "age":18},
+  {"id":2, "name":"xiaojia", "age":17},
+  {"id":3, "name":"xiaoxue", "age":16},
+  {"id":4, "name":"xiaoming", "age":15},
+  {"id":5, "name":"xiaogang", "age":14}
+]
+```
+
+
+
+User:
+
+```java
+@Getter
+@Setter
+@ToString
+public class User {
+    private Long id;
+    private String name;
+    private int age;
+}
+```
+
+实现：
+
+```java
+@SpringBootApplication
+@EnableBatchProcessing
+public class ParallelStepJob {
+    @Autowired
+    private JobBuilderFactory jobBuilderFactory;
+    @Autowired
+    private StepBuilderFactory stepBuilderFactory;
+
+
+    @Bean
+    public JsonItemReader<User> jsonItemReader(){
+        ObjectMapper objectMapper = new ObjectMapper();
+        JacksonJsonObjectReader<User> jsonObjectReader = new JacksonJsonObjectReader<>(User.class);
+        jsonObjectReader.setMapper(objectMapper);
+
+        return new JsonItemReaderBuilder<User>()
+                .name("userJsonItemReader")
+                .jsonObjectReader(jsonObjectReader)
+                .resource(new ClassPathResource("user-parallel.json"))
+                .build();
+    }
+
+    @Bean
+    public FlatFileItemReader<User> flatItemReader(){
+        return new FlatFileItemReaderBuilder<User>()
+                .name("userItemReader")
+                .resource(new ClassPathResource("user-parallel.txt"))
+                .delimited().delimiter("#")
+                .names("id", "name", "age")
+                .targetType(User.class)
+                .build();
+    }
+    @Bean
+    public ItemWriter<User> itemWriter(){
+        return new ItemWriter<User>() {
+            @Override
+            public void write(List<? extends User> items) throws Exception {
+                items.forEach(System.err::println);
+            }
+        };
+    }
+
+    @Bean
+    public Step jsonStep(){
+        return stepBuilderFactory.get("jsonStep")
+                .<User, User>chunk(2)
+                .reader(jsonItemReader())
+                .writer(itemWriter())
+                .build();
+    }
+
+    @Bean
+    public Step flatStep(){
+        return stepBuilderFactory.get("step2")
+                .<User, User>chunk(2)
+                .reader(flatItemReader())
+                .writer(itemWriter())
+                .build();
+    }
+
+    @Bean
+    public Job parallelJob(){
+
+        //线程1-读user-parallel.txt
+        Flow parallelFlow1 = new FlowBuilder<Flow>("parallelFlow1")
+                .start(flatStep())
+                .build();
+
+        //线程2-读user-parallel.json
+        Flow parallelFlow2 = new FlowBuilder<Flow>("parallelFlow2")
+                .start(jsonStep())
+                .split(new SimpleAsyncTaskExecutor())
+                .add(parallelFlow1)
+                .build();
+
+
+        return jobBuilderFactory.get("parallel-step-job")
+                .start(parallelFlow2)
+                .end()
+                .build();
+    }
+    public static void main(String[] args) {
+        SpringApplication.run(ParallelStepJob.class, args);
+    }
+}
+```
+
+结果：
+
+![image-20240205144107476](https://s2.loli.net/2024/02/05/fyrDlLoH1a29vCc.png)
+
+jsonItemReader()  flatItemReader()  定义2个读入操作，分别读json格式跟普通文本格式
+
+parallelJob()  配置job，需要指定并行的flow步骤，先是parallelFlow1然后是parallelFlow2 ， 2个步骤间使用**.split(new SimpleAsyncTaskExecutor())** 隔开，表示线程池开启2个线程，分别处理parallelFlow1， parallelFlow2  2个步骤。
+
+
+
+
+
+### 分区步骤
+
+在SpringBatch 分区步骤讲的是给执行步骤区分上下级。
+
+上级： 主步骤(Master Step)  
+
+下级： 从步骤--工作步骤(Work Step)
+
+主步骤是领导，不用干活，负责管理从步骤，从步骤是下属，必须干活。
+
+一个主步骤下辖管理多个从步骤。
+
+注意： 从步骤，不管多小，它也一个完整的Spring Batch 步骤，负责各自的读入、处理、写入等。
+
+大致结构图：
+
+
+![image-20240205144351966](https://s2.loli.net/2024/02/05/NzycvS1rxlUjV4A.png)
+
+分区步骤一般用于海量数据的处理上，其采用是分治思想。主步骤将大的数据划分多个小的数据集，然后开启多个从步骤，要求每个从步骤负责一个数据集。当所有从步骤处理结束，整作业流程才算结束。
+
+
+
+**分区器（Partitioner）**
+
+主步骤核心组件，负责数据分区，将完整的数据拆解成多个数据集，然后指派给从步骤，让其执行。
+
+拆分规则由Partitioner分区器接口定制，默认的实现类：**MultiResourcePartitioner**
+
+```java
+public interface Partitioner {
+	Map<String, ExecutionContext> partition(int gridSize);
+}
+```
+
+Partitioner 接口只有唯一的方法：partition  参数gridSize表示要**分区的大小**，可以理解为要**开启多个worker步骤**，返回值是一个Map， 其中**key：worker步骤名称**， **value：worker步骤启动需要参数值**，一般包含**分区元数据，比如起始位置，数据量**等。
+
+
+
+**分区处理器（PartitionHandler）**
+
+主步骤核心组件，统一管理work 步骤， 并给work步骤指派任务。
+
+管理规则由PartitionHandler 接口定义，默认的实现类：**TaskExecutorPartitionHandler** 
+
+**需求：将下面几个文件将数据读入内存**
+
+数据准备：
+
+user1-10.txt
+
+```txt
+1#xiaodong#18
+2#xiaodong#18
+3#xiaodong#18
+4#xiaodong#18
+5#xiaodong#18
+6#xiaodong#18
+7#xiaodong#18
+8#xiaodong#18
+9#xiaodong#18
+10#xiaodong#18
+```
+
+user11-20.txt
+
+```txt
+11#xiaodong#18
+12#xiaodong#18
+13#xiaodong#18
+14#xiaodong#18
+15#xiaodong#18
+16#xiaodong#18
+17#xiaodong#18
+18#xiaodong#18
+19#xiaodong#18
+20#xiaodong#18
+```
+
+user21-30.txt
+
+```
+21#xiaodong#18
+22#xiaodong#18
+23#xiaodong#18
+24#xiaodong#18
+25#xiaodong#18
+26#xiaodong#18
+27#xiaodong#18
+28#xiaodong#18
+29#xiaodong#18
+30#xiaodong#18
+```
+
+user31-40.txt
+
+```txt
+31#xiaodong#18
+32#xiaodong#18
+33#xiaodong#18
+34#xiaodong#18
+35#xiaodong#18
+36#xiaodong#18
+37#xiaodong#18
+38#xiaodong#18
+39#xiaodong#18
+40#xiaodong#18
+```
+
+user41-50.txt
+
+```txt
+41#xiaodong#18
+42#xiaodong#18
+43#xiaodong#18
+44#xiaodong#18
+45#xiaodong#18
+46#xiaodong#18
+47#xiaodong#18
+48#xiaodong#18
+49#xiaodong#18
+50#xiaodong#18
+```
+
+操作分析：
+
+![image-20240205145005953](https://s2.loli.net/2024/02/05/ApnP2wsmBaJuIl6.png)
+
+
+
+User:
+
+```java
+@Getter
+@Setter
+@ToString
+public class User {
+    private Long id;
+    private String name;
+    private int age;
+}
+```
+
+
+
+配置分区逻辑：
+
+也就是配置分区器
+
+```java
+public class UserPartitioner  implements Partitioner {
+    @Override
+    public Map<String, ExecutionContext> partition(int gridSize) {
+        Map<String, ExecutionContext> result = new HashMap<>(gridSize);
+
+        int range = 10; //文件间隔
+        int start = 1; //开始位置
+        int end = 10;  //结束位置
+        String text = "user%s-%s.txt";
+
+        for (int i = 0; i < gridSize; i++) {
+            ExecutionContext value = new ExecutionContext();
+            Resource resource = new ClassPathResource(String.format(text, start, end));
+            try {
+                value.putString("file", resource.getURL().toExternalForm());
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            start += range;
+            end += range;
+
+            result.put("user_partition_" + i, value);
+        }
+        return result;
+    }
+}
+```
+
+
+
+完整：
+
+```java
+@SpringBootApplication
+@EnableBatchProcessing
+public class PartStepJob {
+    @Autowired
+    private JobBuilderFactory jobBuilderFactory;
+    @Autowired
+    private StepBuilderFactory stepBuilderFactory;
+
+
+
+    //每个分区文件读取
+    @Bean
+    @StepScope
+    public FlatFileItemReader<User> flatItemReader(@Value("#{stepExecutionContext['file']}") Resource resource){
+        return new FlatFileItemReaderBuilder<User>()
+                .name("userItemReader")
+                .resource(resource)
+                .delimited().delimiter("#")
+                .names("id", "name", "age")
+                .targetType(User.class)
+                .build();
+    }
+
+    @Bean
+    public ItemWriter<User> itemWriter(){
+        return new ItemWriter<User>() {
+            @Override
+            public void write(List<? extends User> items) throws Exception {
+                items.forEach(System.err::println);
+            }
+        };
+    }
+
+
+    //文件分区器-设置分区规则
+    @Bean
+    public UserPartitioner userPartitioner(){
+        return new UserPartitioner();
+    }
+
+    //文件分区处理器-处理分区
+    @Bean
+    public PartitionHandler userPartitionHandler() {
+        TaskExecutorPartitionHandler handler = new TaskExecutorPartitionHandler();
+        handler.setGridSize(5);
+        handler.setTaskExecutor(new SimpleAsyncTaskExecutor());
+        handler.setStep(workStep());
+        try {
+            handler.afterPropertiesSet();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return handler;
+    }
+    
+    //每个从分区操作步骤
+    @Bean
+    public Step workStep() {
+        return stepBuilderFactory.get("workStep")
+                .<User, User>chunk(10)
+                .reader(flatItemReader(null))
+                .writer(itemWriter())
+                .build();
+    }
+
+    //主分区操作步骤
+    @Bean
+    public Step masterStep() {
+        return stepBuilderFactory.get("masterStep")
+                .partitioner(workStep().getName(),userPartitioner())
+                .partitionHandler(userPartitionHandler())
+                .build();
+    }
+
+
+    @Bean
+    public Job partJob(){
+        return jobBuilderFactory.get("part-step-job")
+                .start(masterStep())
+                .build();
+    }
+    public static void main(String[] args) {
+        SpringApplication.run(PartStepJob.class, args);
+    }
+}
+```
+
+结果：
+
+![image-20240205150111021](https://s2.loli.net/2024/02/05/7sznTOPWcdYmGH5.png)
+
+核心：
+
+1>文件分区器：userPartitioner()， 分别加载5个文件进入到程序
+
+2>文件分区处理器：userPartitionHandler() ，指定要分几个区，由谁来处理
+
+3>分区从步骤：workStep() 指定读逻辑与写逻辑
+
+4>分区文件读取：flatItemReader()，需要传入Resource对象，这个对象在userPartitioner()已经标记为file
+
+5>分区主步骤：masterStep() ，指定分区名称与分区器，指定分区处理器
 
 
 
